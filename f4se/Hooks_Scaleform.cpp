@@ -27,20 +27,11 @@
 
 class BSScaleformManager;
 
-typedef BSScaleformManager * (* _BSScaleformManager_Ctor)(BSScaleformManager * mem);
-RelocAddr <_BSScaleformManager_Ctor> BSScaleformManager_Ctor(0x01B1A3E0);
-_BSScaleformManager_Ctor BSScaleformManager_Ctor_Original = nullptr;
 
-typedef UInt32 (* _BSScaleformTint)(BSGFxShaderFXTarget * value, float * colors, float multiplier);
-RelocAddr <_BSScaleformTint> BSScaleformTint(0x01B04CC0);
-_BSScaleformTint BSScaleformTint_Original = nullptr;
 
-RelocAddr <uintptr_t> ScaleformInitHook_Start(0x01B1ABF0 + 0x226);
+RelocAddr <uintptr_t> ScaleformInitHook_Start(0x23DE290); //Actual offset for 1.7.23.16
 
-RelocAddr <uintptr_t> IMenuCreateHook_Start(0x01A80030 + 0xA0F);
-
-// 
-RelocAddr <uintptr_t> SetMenuName(0x0167BF60);
+ 
 
 //// plugin API
 struct ScaleformPluginInfo
@@ -448,7 +439,9 @@ void ScaleformInitHook_Install(GFxMovieView * view)
 	GFxValue		root;
 	GFxMovieRoot	* movieRoot = view->movieRoot;
 
+	_ERROR("attempting to get root....");
 	bool result = movieRoot->GetVariable(&root, "root");
+	_ERROR("post root");
 	if(!result)
 	{
 		_ERROR("couldn't get root");
@@ -458,15 +451,16 @@ void ScaleformInitHook_Install(GFxMovieView * view)
 	GFxValue	f4se;
 	movieRoot->CreateObject(&f4se);
 
-	RegisterFunction<F4SEScaleform_GetMembers>(&f4se, movieRoot, "GetMembers");
-	RegisterFunction<F4SEScaleform_AllowTextInput>(&f4se, movieRoot, "AllowTextInput");
-	RegisterFunction<F4SEScaleform_SendExternalEvent>(&f4se, movieRoot, "SendExternalEvent");
-	RegisterFunction<F4SEScaleform_CallFunctionNoWait>(&f4se, movieRoot, "CallFunctionNoWait");
-	RegisterFunction<F4SEScaleform_CallGlobalFunctionNoWait>(&f4se, movieRoot, "CallGlobalFunctionNoWait");
-	RegisterFunction<F4SEScaleform_GetDirectoryListing>(&f4se, movieRoot, "GetDirectoryListing");
-	RegisterFunction<F4SEScaleform_MountImage>(&f4se, movieRoot, "MountImage");
-	RegisterFunction<F4SEScaleform_UnmountImage>(&f4se, movieRoot, "UnmountImage");
+	//RegisterFunction<F4SEScaleform_GetMembers>(&f4se, movieRoot, "GetMembers");
+	//RegisterFunction<F4SEScaleform_AllowTextInput>(&f4se, movieRoot, "AllowTextInput");
+	//RegisterFunction<F4SEScaleform_SendExternalEvent>(&f4se, movieRoot, "SendExternalEvent");
+	//RegisterFunction<F4SEScaleform_CallFunctionNoWait>(&f4se, movieRoot, "CallFunctionNoWait");
+	//RegisterFunction<F4SEScaleform_CallGlobalFunctionNoWait>(&f4se, movieRoot, "CallGlobalFunctionNoWait");
+	//RegisterFunction<F4SEScaleform_GetDirectoryListing>(&f4se, movieRoot, "GetDirectoryListing");
+	//RegisterFunction<F4SEScaleform_MountImage>(&f4se, movieRoot, "MountImage");
+	//RegisterFunction<F4SEScaleform_UnmountImage>(&f4se, movieRoot, "UnmountImage");
 	
+	/*
 	GFxValue	version;
 	movieRoot->CreateObject(&version);
 	version.SetMember("major", &GFxValue(F4SE_VERSION_INTEGER));
@@ -478,6 +472,7 @@ void ScaleformInitHook_Install(GFxMovieView * view)
 	// plugins
 	GFxValue	plugins;
 	movieRoot->CreateObject(&plugins);
+
 
 	for(PluginList::iterator iter = s_plugins.begin(); iter != s_plugins.end(); ++iter)
 	{
@@ -492,6 +487,7 @@ void ScaleformInitHook_Install(GFxMovieView * view)
 	f4se.SetMember("plugins", &plugins);
 
 	root.SetMember("f4se", &f4se);
+		*/
 
 	if(root.IsObject())
 	{
@@ -517,6 +513,7 @@ void ScaleformInitHook_Install(GFxMovieView * view)
 			}
 		}
 	}
+	/*
 	
 	GFxValue dispatchEvent;
 	GFxValue eventArgs[3];
@@ -525,58 +522,9 @@ void ScaleformInitHook_Install(GFxMovieView * view)
 	eventArgs[2] = GFxValue(false);
 	movieRoot->CreateObject(&dispatchEvent, "flash.events.Event", eventArgs, 3);
 	movieRoot->Invoke("root.dispatchEvent", nullptr, &dispatchEvent, 1);
+	*/
 }
 
-BSScaleformManager * BSScaleformManager_Ctor_Hook(BSScaleformManager * mgr)
-{
-	BSScaleformManager * result = BSScaleformManager_Ctor_Original(mgr);
-
-	BSScaleformTranslator * translator = (BSScaleformTranslator*)result->stateBag->GetStateAddRef(GFxState::kInterface_Translator);
-	if(translator) {
-		Translation::ImportTranslationFiles(translator);
-	}
-
-	if(g_logScaleform)
-	{
-		GFxLogState * logger = (GFxLogState*)result->stateBag->GetStateAddRef(GFxState::kInterface_Log);
-		logger->logger = new F4SEGFxLogger();
-	}
-
-	if(*g_ui)
-	{
-		(*g_ui)->menuOpenCloseEventSource.AddEventSink(&g_menuOpenCloseHandler);
-	}
-
-	return result;
-}
-
-UInt32 BSScaleformTint_Hook(BSGFxShaderFXTarget * value, float * colors, float multiplier)
-{
-	if(value->HasMember("onApplyColorChange"))
-	{
-		GFxValue result;
-		GFxValue args[4];
-		args[0] = GFxValue(colors[0]);
-		args[1] = GFxValue(colors[1]);
-		args[2] = GFxValue(colors[2]); 
-		args[3] = GFxValue(multiplier);
-		value->Invoke("onApplyColorChange", &result, args, 4);
-		if(result.IsArray() && result.GetArraySize() >= 4)
-		{
-			result.GetElement(0, &args[0]);
-			result.GetElement(1, &args[1]);
-			result.GetElement(2, &args[2]);
-			result.GetElement(3, &args[3]);
-
-			colors[0] = args[0].GetNumber();
-			colors[1] = args[1].GetNumber();
-			colors[2] = args[2].GetNumber();
-			multiplier = args[3].GetNumber();
-		}
-	}
-	
-	return BSScaleformTint_Original(value, colors, multiplier);
-}
 
 void Hooks_Scaleform_Commit()
 {
@@ -600,97 +548,15 @@ void Hooks_Scaleform_Commit()
 			}
 		};
 
+
+
+
+
+
 		void * codeBuf = g_localTrampoline.StartAlloc();
 		ScaleformInitHook_Code code(codeBuf);
 		g_localTrampoline.EndAlloc(code.getCurr());
 
 		g_branchTrampoline.Write5Call(ScaleformInitHook_Start, uintptr_t(code.getCode()));
-	}
-
-	// hook creation of BSScaleformManager
-	{
-		struct BSScaleformManager_Code : Xbyak::CodeGenerator {
-			BSScaleformManager_Code(void * buf) : Xbyak::CodeGenerator(4096, buf)
-			{
-				Xbyak::Label retnLabel;
-
-				push(rbp);
-				push(rbx);
-				push(rsi);
-				push(rdi);
-
-				jmp(ptr [rip + retnLabel]);
-
-				L(retnLabel);
-				dq(BSScaleformManager_Ctor.GetUIntPtr() + 5);
-			}
-		};
-
-		void * codeBuf = g_localTrampoline.StartAlloc();
-		BSScaleformManager_Code code(codeBuf);
-		g_localTrampoline.EndAlloc(code.getCurr());
-
-		BSScaleformManager_Ctor_Original = (_BSScaleformManager_Ctor)codeBuf;
-
-		g_branchTrampoline.Write5Branch(BSScaleformManager_Ctor.GetUIntPtr(), (uintptr_t)BSScaleformManager_Ctor_Hook);
-	}
-
-	// hook global tinting of objects
-	{
-		struct BSScaleformTint_Code : Xbyak::CodeGenerator {
-			BSScaleformTint_Code(void * buf) : Xbyak::CodeGenerator(4096, buf)
-			{
-				Xbyak::Label retnLabel;
-
-				mov(ptr[rsp+0x18], rbx);
-
-				jmp(ptr [rip + retnLabel]);
-
-				L(retnLabel);
-				dq(BSScaleformTint.GetUIntPtr() + 5);
-			}
-		};
-
-		void * codeBuf = g_localTrampoline.StartAlloc();
-		BSScaleformTint_Code code(codeBuf);
-		g_localTrampoline.EndAlloc(code.getCurr());
-
-		BSScaleformTint_Original = (_BSScaleformTint)codeBuf;
-
-		g_branchTrampoline.Write5Branch(BSScaleformTint.GetUIntPtr(), (uintptr_t)BSScaleformTint_Hook);
-	}
-
-	// Hook menu construction
-	{
-		struct MenuConstruction_Code : Xbyak::CodeGenerator {
-			MenuConstruction_Code(void * buf, uintptr_t originFuncAddr, uintptr_t funcAddr) : Xbyak::CodeGenerator(4096, buf)
-			{
-				Xbyak::Label retnLabel, funcLabel1, funcLabel2;
-
-				// Put the original call back
-				call(ptr [rip + funcLabel1]);
-
-				// Pull the IMenu off the stack and call our new function
-				mov(rcx, ptr[rsp + 0x40]);
-				call(ptr [rip + funcLabel2]);
-
-				// Jump back to the original location
-				jmp(ptr [rip + retnLabel]);
-
-				L(funcLabel1);
-				dq(originFuncAddr);
-
-				L(funcLabel2);
-				dq(funcAddr);
-
-				L(retnLabel);
-				dq(IMenuCreateHook_Start.GetUIntPtr() + 0x5);
-			}
-		};
-
-		void * codeBuf = g_localTrampoline.StartAlloc();
-		MenuConstruction_Code code(codeBuf, SetMenuName.GetUIntPtr(), (uintptr_t)LoadCustomMenu_Hook);
-		g_localTrampoline.EndAlloc(code.getCurr());
-		g_branchTrampoline.Write5Branch(IMenuCreateHook_Start.GetUIntPtr(), uintptr_t(code.getCode()));
 	}
 }

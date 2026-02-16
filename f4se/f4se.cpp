@@ -23,233 +23,202 @@
 #include "PluginManager.h"
 #include "InternalSerialization.h"
 
+#include "windows.h"
+#include "f4se_loader_common/IdentifyEXE.h"
+
 IDebugLog gLog;
 void * g_moduleHandle = nullptr;
+static bool isInit = false;
 
 void F4SE_Preinit();
 void F4SE_Initialize();
 
+void WaitForDebugger(void) {
+
+}
+
 const size_t kPoolSize = 1024 * 64;
 const size_t kPoolReserveSize = 512;
 
-// api-ms-win-crt-runtime-l1-1-0.dll
-typedef int (*__initterm_e)(_PIFV *, _PIFV *);
-__initterm_e _initterm_e_Original = nullptr;
-
-typedef char * (*__get_narrow_winmain_command_line)();
-__get_narrow_winmain_command_line _get_narrow_winmain_command_line_Original = NULL;
-
-// runs before global initializers
-int __initterm_e_Hook(_PIFV * a, _PIFV * b)
+bool checkFalloutVersion(void)
 {
-	// could be used for plugin optional preload
+	_MESSAGE("Checking Fallout 76 version.");
+	std::string procName = "Fallout76.exe";
+	const std::string& runtimeDir = GetRuntimeDirectory();
+	std::string procPath = runtimeDir + "\\" + procName;
+	std::string		dllSuffix;
+	ProcHookInfo	procHookInfo;
 
-	F4SE_Preinit();
-
-	return _initterm_e_Original(a, b);
-}
-
-// runs after global initializers
-char * __get_narrow_winmain_command_line_Hook()
-{
-	// the usual load time
-
-	F4SE_Initialize();
-
-	return _get_narrow_winmain_command_line_Original();
-}
-
-void InstallBaseHooks()
-{
-	gLog.OpenRelative(CSIDL_MYDOCUMENTS, "\\My Games\\" SAVE_FOLDER_NAME "\\F4SE\\f4se.log");
-
-	HANDLE exe = GetModuleHandle(nullptr);
-
-	// fetch functions to hook
-	auto * initterm = (__initterm_e *)GetIATAddr(exe, "api-ms-win-crt-runtime-l1-1-0.dll", "_initterm_e");
-	auto * cmdline = (__get_narrow_winmain_command_line *)GetIATAddr(exe, "api-ms-win-crt-runtime-l1-1-0.dll", "_get_narrow_winmain_command_line");
-
-	// hook them
-	if(initterm)
+	// check exe version
+	if (!IdentifyEXE(procPath.c_str(), false, &dllSuffix, &procHookInfo))
 	{
-		_initterm_e_Original = *initterm;
-		SafeWrite64(uintptr_t(initterm), UInt64(__initterm_e_Hook));
-	}
-	else
-	{
-		_ERROR("couldn't find _initterm_e");
-	}
-
-	if(cmdline)
-	{
-		_get_narrow_winmain_command_line_Original = *cmdline;
-		SafeWrite64(uintptr_t(cmdline), UInt64(__get_narrow_winmain_command_line_Hook));
-	}
-	else
-	{
-		_ERROR("couldn't find _get_narrow_winmain_command_line");
-	}
-}
-
-void WaitForDebugger(void)
-{
-	while(!IsDebuggerPresent())
-	{
-		Sleep(10);
-	}
-
-	Sleep(1000 * 2);
-}
-
-bool ShouldWaitForDebugger()
-{
-	const char* env = "F4SE_WAITFORDEBUGGER";
-	const auto printErr = [=]()
-	{
-		const DWORD err = GetLastError();
-		if (err != ERROR_ENVVAR_NOT_FOUND)
-			_ERROR("failed to get %s with error code %u", env, err);
-	};
-
-	std::vector<char> buf;
-	const DWORD len = GetEnvironmentVariableA(env, buf.data(), 0);
-	if (len == 0) 	{
-		printErr();
+		_ERROR("EXE version mismatch.");
 		return false;
 	}
-
-	buf.resize(len, '\0');
-	if (GetEnvironmentVariableA(env, buf.data(), buf.size()) == 0) 	{
-		printErr();
-		return false;
-	}
-
-	return std::strcmp(buf.data(), "1") == 0;
+	else
+		return true;
 }
 
-void F4SE_Preinit()
+void ScaleformNXInitialize(void)
 {
-	static bool runOnce = false;
-	if(runOnce) return;
-	runOnce = true;
-
-	FILETIME	now;
-	GetSystemTimeAsFileTime(&now);
-
-	_MESSAGE("F4SE runtime: initialize (version = %d.%d.%d %08X %08X%08X, os = %s)",
-		F4SE_VERSION_INTEGER, F4SE_VERSION_INTEGER_MINOR, F4SE_VERSION_INTEGER_BETA, RUNTIME_VERSION,
-		now.dwHighDateTime, now.dwLowDateTime, GetOSInfoStr().c_str());
-
-	_MESSAGE("imagebase = %016I64X", GetModuleHandle(NULL));
-	_MESSAGE("reloc mgr imagebase = %016I64X", RelocationManager::s_baseAddr);
-
-	if (ShouldWaitForDebugger())
-	{
-		SetPriorityClass(GetCurrentProcess(), IDLE_PRIORITY_CLASS);
-		WaitForDebugger();
-	}
-
-	if(!g_branchTrampoline.Create(kPoolSize))
-	{
-		_ERROR("couldn't create branch trampoline. this is fatal. skipping remainder of init process.");
-		return;
-	}
-
-	if(!g_localTrampoline.Create(kPoolSize, g_moduleHandle))
-	{
-		_ERROR("couldn't create codegen buffer. this is fatal. skipping remainder of init process.");
-		return;
-	}
-
-	const auto initAlloc = [=](PluginAllocator& alloc, BranchTrampoline& trampoline)
-	{
-		const auto size = kPoolSize - kPoolReserveSize;
-		alloc.Initialize(trampoline.Allocate(size), size);
-	};
-	initAlloc(g_branchPluginAllocator, g_branchTrampoline);
-	initAlloc(g_localPluginAllocator, g_localTrampoline);
-
-	// scan plugin folder
-	g_pluginManager.Init();
-
-	// preload plugins
-	g_pluginManager.InstallPlugins(PluginManager::kPhase_Preload);
-
-	_MESSAGE("preinit complete");
-}
-
-void F4SE_Initialize(void)
-{
-	static bool isInit = false;
-	if(isInit) return;
+	if (isInit) return;
 	isInit = true;
 
-	Hooks_Debug_Init();
-	Hooks_ObScript_Init();
-	Hooks_Papyrus_Init();
-	Hooks_Scaleform_Init();
-	Hooks_Gameplay_Init();
-	Hooks_GameData_Init();
-	Hooks_SaveLoad_Init();
-	Hooks_Input_Init();
-	Hooks_Threads_Init();
-	Hooks_Camera_Init();
+	gLog.OpenRelative(CSIDL_MYDOCUMENTS, "\\My Games\\Fallout 76\\ScaleformNX\\SfNX.log");
+	
+	if (!checkFalloutVersion())
+		return;
 
-	g_pluginManager.InstallPlugins(PluginManager::kPhase_Load);
-	g_pluginManager.LoadComplete();
+#ifndef _DEBUG
+	__try {
+#endif
+		FILETIME	now;
+		GetSystemTimeAsFileTime(&now);
 
-	Hooks_Debug_Commit();
-	Hooks_ObScript_Commit();
-	Hooks_Papyrus_Commit();
-	Hooks_Scaleform_Commit();
-	Hooks_Gameplay_Commit();
-	Hooks_GameData_Commit();
-	Hooks_SaveLoad_Commit();
-	Hooks_Input_Commit();
-	Hooks_Threads_Commit();
-	Hooks_Camera_Commit();
+		_MESSAGE("SFE runtime: initialize (version = %d.%d.%d %08X %08X%08X, os = %s)",
+			F4SE_VERSION_INTEGER, F4SE_VERSION_INTEGER_MINOR, F4SE_VERSION_INTEGER_BETA, RUNTIME_VERSION,
+			now.dwHighDateTime, now.dwLowDateTime, GetOSInfoStr().c_str());
 
-	const auto printAlloc = [=](BranchTrampoline& pool, const char* name)
+		_MESSAGE("imagebase = %016I64X", GetModuleHandle(NULL));
+		_MESSAGE("reloc mgr imagebase = %016I64X", RelocationManager::s_baseAddr);
+#ifdef _DEBUG
+		SetPriorityClass(GetCurrentProcess(), IDLE_PRIORITY_CLASS);
+
+		WaitForDebugger();
+#endif
+		if (!g_branchTrampoline.Create(1024 * 64))
+		{
+			_ERROR("couldn't create branch trampoline. this is fatal. skipping remainder of init process.");
+			return;
+		}
+
+		if (!g_localTrampoline.Create(1024 * 64, g_moduleHandle))
+		{
+			_ERROR("couldn't create codegen buffer. this is fatal. skipping remainder of init process.");
+			return;
+		}
+
+		//Hooks_Debug_Init();
+		//Hooks_ObScript_Init();
+		//Hooks_Papyrus_Init();
+		Hooks_Scaleform_Init();
+		//Hooks_Gameplay_Init();
+		//Hooks_GameData_Init();
+		//Hooks_SaveLoad_Init();
+		//Hooks_Input_Init();
+		//Hooks_Threads_Init();
+		//Hooks_Camera_Init();
+
+		//g_pluginManager.InstallPlugins(PluginManager::kPhase_Load);
+		//g_pluginManager.LoadComplete();
+
+		//Hooks_Debug_Commit();
+		//Hooks_ObScript_Commit();
+		//Hooks_Papyrus_Commit();
+		Hooks_Scaleform_Commit();
+		//Hooks_Gameplay_Commit();
+		//Hooks_GameData_Commit();
+		//Hooks_SaveLoad_Commit();
+		//Hooks_Input_Commit();
+		//Hooks_Threads_Commit();
+		//Hooks_Camera_Commit();
+
+		FlushInstructionCache(GetCurrentProcess(), NULL, 0);
+
+#ifndef _DEBUG
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
 	{
-		const auto allocated = kPoolReserveSize - pool.Remain();
-		assert(allocated <= kPoolReserveSize);
-		_DMESSAGE("F4SE allocated %u bytes from %s pool", allocated, name);
-	};
-	printAlloc(g_branchTrampoline, "branch");
-	printAlloc(g_localTrampoline, "local");
-
-	Init_CoreSerialization_Callbacks();
-
-	FlushInstructionCache(GetCurrentProcess(), NULL, 0);
-
+		_ERROR("exception thrown during startup");
+	}	
+#endif
 	_MESSAGE("init complete");
 }
 
+
+/*
+Minimal dxgi.dll shim by reg2k (https://github.com/reg2k).
+*/
+
+using _CreateDXGIFactory = HRESULT(*)(REFIID riid, void** ppFactory);
+using _CreateDXGIFactory2 = HRESULT(*)(UINT flags, REFIID riid, void** ppFactory);
+using _DXGID3D10CreateDevice = HRESULT(*)(HMODULE hModule, void* pFactory, void* pAdapter, UINT Flags, void* pUnknown, void** ppDevice);
+using _DXGID3D10CreateLayeredDevice = HRESULT(*)(void* pUnknown1, void* pUnknown2, void* pUnknown3, void* pUnknown4, void* pUnknown5);
+using _DXGID3D10GetLayeredDeviceSize = SIZE_T(*)(const void* pLayers, UINT NumLayers);
+using _DXGID3D10RegisterLayers = HRESULT(*)(const void* pLayers, UINT NumLayers);
+_CreateDXGIFactory  CreateDXGIFactory_Original;
+_CreateDXGIFactory  CreateDXGIFactory1_Original;
+_CreateDXGIFactory2 CreateDXGIFactory2_Original;
+_DXGID3D10CreateDevice DXGID3D10CreateDevice_Original;
+_DXGID3D10CreateLayeredDevice DXGID3D10CreateLayeredDevice_Original;
+_DXGID3D10GetLayeredDeviceSize DXGID3D10GetLayeredDeviceSize_Original;
+_DXGID3D10RegisterLayers DXGID3D10RegisterLayers_Original;
+
+HMODULE originalModule = NULL;
+HMODULE dllHandle = NULL;
 extern "C" {
-	void StartF4SE(void)
+	void StartF4SE()
 	{
-		InstallBaseHooks();
+		//aleformNXInitialize();
 	}
 
-	BOOL WINAPI DllMain(HANDLE hDllHandle, DWORD dwReason, LPVOID lpreserved)
-	{
-		switch(dwReason)
-		{
-		case DLL_PROCESS_ATTACH:
-			g_moduleHandle = (void *)hDllHandle;
-			break;
-
-		case DLL_PROCESS_DETACH:
-			break;
-		};
-
-		return TRUE;
+	__declspec(dllexport) HRESULT __stdcall CreateDXGIFactory(REFIID riid, void** ppFactory) {
+		static bool initDone = false;
+		if (!initDone) {
+			initDone = true;
+			g_moduleHandle = (void*)dllHandle;
+			ScaleformNXInitialize();
+		}
+		return CreateDXGIFactory_Original(riid, ppFactory);
 	}
 
-	__declspec(dllexport) F4SECoreVersionData F4SECore_Version =
-	{
-		F4SECoreVersionData::kVersion,
+	__declspec(dllexport) HRESULT __stdcall CreateDXGIFactory1(REFIID riid, void** ppFactory) {
+		return CreateDXGIFactory1_Original(riid, ppFactory);
+	}
 
-		RUNTIME_VERSION,
-	};
+	__declspec(dllexport) HRESULT __stdcall CreateDXGIFactory2(UINT flags, REFIID riid, void** ppFactory) {
+		return CreateDXGIFactory2_Original(flags, riid, ppFactory);
+	}
+
+	__declspec(dllexport) HRESULT __stdcall DXGID3D10CreateDevice(HMODULE hModule, void* pFactory, void* pAdapter, UINT Flags, void* pUnknown, void** ppDevice) {
+		return DXGID3D10CreateDevice_Original(hModule, pFactory, pAdapter, Flags, pUnknown, ppDevice);
+	}
+
+	__declspec(dllexport) HRESULT __stdcall DXGID3D10CreateLayeredDevice(void* pUnknown1, void* pUnknown2, void* pUnknown3, void* pUnknown4, void* pUnknown5) {
+		return DXGID3D10CreateLayeredDevice_Original(pUnknown1, pUnknown2, pUnknown3, pUnknown4, pUnknown5);
+	}
+
+	__declspec(dllexport) SIZE_T __stdcall DXGID3D10GetLayeredDeviceSize(const void* pLayers, UINT NumLayers) {
+		return DXGID3D10GetLayeredDeviceSize_Original(pLayers, NumLayers);
+	}
+
+	__declspec(dllexport) HRESULT __stdcall DXGID3D10RegisterLayers(const void* pLayers, UINT NumLayers) {
+		return DXGID3D10RegisterLayers_Original(pLayers, NumLayers);
+	}
 };
+
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
+{
+	switch (ul_reason_for_call) {
+	case DLL_PROCESS_ATTACH:
+		char path[MAX_PATH];
+		GetSystemDirectoryA(path, MAX_PATH);
+		strcat_s(path, "\\dxgi.dll");
+
+		dllHandle = hModule;
+		originalModule = LoadLibraryA(path);
+		CreateDXGIFactory_Original = reinterpret_cast<_CreateDXGIFactory> (GetProcAddress(originalModule, "CreateDXGIFactory"));
+		CreateDXGIFactory1_Original = reinterpret_cast<_CreateDXGIFactory> (GetProcAddress(originalModule, "CreateDXGIFactory1"));
+		CreateDXGIFactory2_Original = reinterpret_cast<_CreateDXGIFactory2>(GetProcAddress(originalModule, "CreateDXGIFactory2"));
+		DXGID3D10CreateDevice_Original = reinterpret_cast<_DXGID3D10CreateDevice>(GetProcAddress(originalModule, "DXGID3D10CreateDevice"));
+		DXGID3D10CreateLayeredDevice_Original = reinterpret_cast<_DXGID3D10CreateLayeredDevice>(GetProcAddress(originalModule, "DXGID3D10CreateLayeredDevice"));
+		DXGID3D10GetLayeredDeviceSize_Original = reinterpret_cast<_DXGID3D10GetLayeredDeviceSize>(GetProcAddress(originalModule, "DXGID3D10GetLayeredDeviceSize"));
+		DXGID3D10RegisterLayers_Original = reinterpret_cast<_DXGID3D10RegisterLayers>(GetProcAddress(originalModule, "DXGID3D10RegisterLayers"));
+		break;
+
+	case DLL_PROCESS_DETACH:
+		FreeLibrary(originalModule);
+		break;
+	}
+	return TRUE;
+}
